@@ -108,6 +108,7 @@ public class ConversionService {
 
     private File convertWithLibreOffice(Path inputPath, Path outputDir, String uid, String targetFormat)
             throws IOException {
+                Files.createDirectories(outputDir);
 
         boolean acquired;
         try {
