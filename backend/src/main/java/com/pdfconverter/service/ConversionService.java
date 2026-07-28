@@ -26,16 +26,6 @@ import java.util.concurrent.TimeUnit;
  * headless mode. LibreOffice performs real layout analysis internally
  * (text blocks, tables, images, fonts), so output preserves formatting
  * far more faithfully than a pure PDFBox/POI text-extraction approach.
- *
- * Requirements on the host machine / container:
- *  - "libreoffice" (or "soffice") must be installed and on PATH.
- *  - Enough RAM per concurrent conversion (each spawns its own process).
- *
- * Concurrency: each conversion runs in its own isolated LibreOffice user
- * profile (via -env:UserInstallation) so simultaneous requests never
- * collide on a shared profile lock. A semaphore also caps how many
- * LibreOffice processes can run at once, protecting the host from being
- * overwhelmed under bursty traffic.
  */
 @Slf4j
 @Service
@@ -44,36 +34,37 @@ public class ConversionService {
 
     private final StorageConfig storageConfig;
 
-    /** Max simultaneous LibreOffice processes. Tune based on available RAM/CPU. */
     private static final int MAX_CONCURRENT_CONVERSIONS = 3;
     private static final long CONVERSION_TIMEOUT_SECONDS = 120;
 
-    /**
-     * Full path (or bare command, if reliably on PATH) to the LibreOffice
-     * binary. Configurable via application.properties so each environment
-     * (Windows dev machine, Render's Linux container) can point at its own
-     * install location without touching code:
-     *
-     *   # application.properties (Windows dev example)
-     *   libreoffice.binary-path=C:/Program Files/LibreOffice/program/soffice.exe
-     *
-     *   # application.properties (Linux/Render example)
-     *   libreoffice.binary-path=libreoffice
-     *
-     * If not set, falls back to a bare command name based on OS — which
-     * only works if PATH is correctly configured for the process running
-     * the JVM (not just your terminal).
-     */
     @Value("${libreoffice.binary-path:#{null}}")
     private String configuredLibreOfficeBinary;
 
     private String resolveLibreOfficeBinary() {
+        // 1. Check if explicitly configured via application properties or environment variable mapping
         if (configuredLibreOfficeBinary != null && !configuredLibreOfficeBinary.isBlank()) {
-            return configuredLibreOfficeBinary;
+            return configuredLibreOfficeBinary.trim();
         }
-        return System.getProperty("os.name", "").toLowerCase().contains("win")
-                ? "soffice.exe"
-                : "libreoffice";
+
+        // 2. Check if running on Windows
+        boolean isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
+        if (isWindows) {
+            return "soffice.exe";
+        }
+
+        // 3. For Linux containers (like Render), check standard absolute paths explicitly
+        File standardBin = new File("/usr/bin/soffice");
+        if (standardBin.exists()) {
+            return "/usr/bin/soffice";
+        }
+
+        File altBin = new File("/usr/bin/libreoffice");
+        if (altBin.exists()) {
+            return "/usr/bin/libreoffice";
+        }
+
+        // 4. Final fallback
+        return "soffice";
     }
 
     private final Semaphore conversionSlots = new Semaphore(MAX_CONCURRENT_CONVERSIONS, true);
@@ -115,9 +106,6 @@ public class ConversionService {
         };
     }
 
-    // ---------------------------------------------------------------------
-    // Core LibreOffice headless conversion (used for all 4 conversion types)
-    // ---------------------------------------------------------------------
     private File convertWithLibreOffice(Path inputPath, Path outputDir, String uid, String targetFormat)
             throws IOException {
 
@@ -137,8 +125,11 @@ public class ConversionService {
         try {
             Files.createDirectories(profileDir);
 
+            String binaryPath = resolveLibreOfficeBinary();
+            log.info("Executing LibreOffice binary: {}", binaryPath);
+
             ProcessBuilder pb = new ProcessBuilder(
-                    resolveLibreOfficeBinary(),
+                    binaryPath,
                     "--headless",
                     "--norestore",
                     "--nologo",
@@ -181,7 +172,6 @@ public class ConversionService {
                         + "):\n" + processOutput);
             }
 
-            // LibreOffice names its output after the input file's base name, not our uid.
             String inputBaseName = stripExtension(inputPath.getFileName().toString());
             Path libreOfficeOutput = outputDir.resolve(inputBaseName + "." + targetFormat);
 
@@ -217,9 +207,6 @@ public class ConversionService {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // helpers
-    // ---------------------------------------------------------------------
     private String stripExtension(String fileName) {
         int dot = fileName.lastIndexOf('.');
         return dot == -1 ? fileName : fileName.substring(0, dot);

@@ -4,9 +4,13 @@ WORKDIR /app
 COPY . .
 RUN mvn clean package -DskipTests
 
-# Runtime stage (Using Java 21)
-FROM eclipse-temurin:21-jre-alpine
+# Runtime stage (Using Java 21 on Ubuntu/Debian to support LibreOffice)
+FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
+
+# Install LibreOffice for document/PDF conversion
+RUN apt-get update && apt-get install -y libreoffice && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /app/target/*.jar app.jar
 
 EXPOSE 8080
