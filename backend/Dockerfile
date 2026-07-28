@@ -8,8 +8,12 @@ RUN mvn clean package -DskipTests
 FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
 
-# Install LibreOffice for document/PDF conversion
-RUN apt-get update && apt-get install -y libreoffice && rm -rf /var/lib/apt/lists/*
+# Install LibreOffice along with writer and calc packages for full export filters
+RUN apt-get update && apt-get install -y \
+    libreoffice \
+    libreoffice-writer \
+    libreoffice-calc \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/target/*.jar app.jar
 
