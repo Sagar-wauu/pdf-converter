@@ -128,18 +128,31 @@ public class ConversionService {
             String binaryPath = resolveLibreOfficeBinary();
             log.info("Executing LibreOffice binary: {}", binaryPath);
 
-            ProcessBuilder processBuilder = new ProcessBuilder(
-             "soffice", 
-            "--headless", 
-            "--convert-to", 
-             "docx:Office Open XML Text", 
-             "--outdir", 
-             outputDir, 
-            inputFilePath
-            );
-            pb.redirectErrorStream(true);
+            // Dynamically select the correct export filter based on the target format
+            String filter = switch (targetFormat.toLowerCase()) {
+                case "pdf" -> "pdf";
+                case "docx" -> "docx:Office Open XML Text";
+                case "pptx" -> "impress_pdf_Export";
+                default -> targetFormat;
+            };
 
-            Process process = pb.start();
+            if ("pptx".equals(targetFormat.toLowerCase())) {
+                filter = "Impress MS PowerPoint";
+            }
+
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                    binaryPath, 
+                    "--headless", 
+                    "-env:UserInstallation=" + profileDir.toUri(),
+                    "--convert-to", 
+                    filter, 
+                    "--outdir", 
+                    outputDir.toString(), 
+                    inputPath.toString()
+            );
+            processBuilder.redirectErrorStream(true);
+
+            Process process = processBuilder.start();
 
             StringBuilder processOutput = new StringBuilder();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
