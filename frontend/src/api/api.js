@@ -16,15 +16,16 @@ export const convertFile = (file, type) => {
 
 export const getConversionHistory = () => api.get('/convert/history')
 
+// Added '/api' prefix here to match your backend controller mapping
 export const generateCoverPage = (payload) =>
-  api.post('/coverpage/generate', payload, { responseType: 'blob' })
+  api.post('/api/coverpage/generate', payload, { responseType: 'blob' })
 
-export const saveCoverPage = (payload) => api.post('/coverpage/save', payload)
+export const saveCoverPage = (payload) => api.post('/api/coverpage/save', payload)
 
-export const listSavedCoverPages = () => api.get('/coverpage/saved')
+export const listSavedCoverPages = () => api.get('/api/coverpage/saved')
 
-export const getSavedCoverPage = (id) => api.get(`/coverpage/saved/${id}`)
+export const getSavedCoverPage = (id) => api.get(`/api/coverpage/saved/${id}`)
 
-export const deleteSavedCoverPage = (id) => api.delete(`/coverpage/saved/${id}`)
+export const deleteSavedCoverPage = (id) => api.delete(`/api/coverpage/saved/${id}`)
 
 export default api
