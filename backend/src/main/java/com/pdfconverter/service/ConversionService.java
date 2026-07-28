@@ -11,10 +11,14 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -36,23 +40,26 @@ public class ConversionService {
 
     private static final int MAX_CONCURRENT_CONVERSIONS = 3;
     private static final long CONVERSION_TIMEOUT_SECONDS = 120;
+    private static final Map<ConversionType, Set<String>> SUPPORTED_INPUT_EXTENSIONS = Map.of(
+            ConversionType.PDF_TO_WORD, Set.of("pdf"),
+            ConversionType.PDF_TO_PPT, Set.of("pdf"),
+            ConversionType.WORD_TO_PDF, Set.of("doc", "docx"),
+            ConversionType.PPT_TO_PDF, Set.of("ppt", "pptx")
+    );
 
     @Value("${libreoffice.binary-path:#{null}}")
     private String configuredLibreOfficeBinary;
 
     private String resolveLibreOfficeBinary() {
-        // 1. Check if explicitly configured via application properties or environment variable mapping
         if (configuredLibreOfficeBinary != null && !configuredLibreOfficeBinary.isBlank()) {
             return configuredLibreOfficeBinary.trim();
         }
 
-        // 2. Check if running on Windows
-        boolean isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
+        boolean isWindows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
         if (isWindows) {
             return "soffice.exe";
         }
 
-        // 3. For Linux containers (like Render), check standard absolute paths explicitly
         File standardBin = new File("/usr/bin/soffice");
         if (standardBin.exists()) {
             return "/usr/bin/soffice";
@@ -63,7 +70,6 @@ public class ConversionService {
             return "/usr/bin/libreoffice";
         }
 
-        // 4. Final fallback
         return "soffice";
     }
 
@@ -81,6 +87,7 @@ public class ConversionService {
 
         String uid = UUID.randomUUID().toString();
         String originalName = sanitizeFileName(file.getOriginalFilename());
+        validateInputExtension(originalName, type);
         String baseName = stripExtension(originalName);
 
         Path inputPath = uploadDir.resolve(uid + "_" + originalName);
@@ -108,7 +115,7 @@ public class ConversionService {
 
     private File convertWithLibreOffice(Path inputPath, Path outputDir, String uid, String targetFormat)
             throws IOException {
-                Files.createDirectories(outputDir);
+        Files.createDirectories(outputDir);
 
         boolean acquired;
         try {
@@ -129,26 +136,16 @@ public class ConversionService {
             String binaryPath = resolveLibreOfficeBinary();
             log.info("Executing LibreOffice binary: {}", binaryPath);
 
-            // Dynamically select the correct export filter based on the target format
-            String filter = switch (targetFormat.toLowerCase()) {
-                case "pdf" -> "pdf";
-                case "docx" -> "writer8";
-                case "pptx" -> "impress8";
-                default -> targetFormat;
-            };
-
-            if ("pptx".equals(targetFormat.toLowerCase())) {
-                filter = "Impress MS PowerPoint";
-            }
+            String filter = resolveLibreOfficeFilter(targetFormat);
 
             ProcessBuilder processBuilder = new ProcessBuilder(
-                    binaryPath, 
-                    "--headless", 
+                    binaryPath,
+                    "--headless",
                     "-env:UserInstallation=" + profileDir.toUri(),
-                    "--convert-to", 
-                    filter, 
-                    "--outdir", 
-                    outputDir.toString(), 
+                    "--convert-to",
+                    filter,
+                    "--outdir",
+                    outputDir.toString(),
                     inputPath.toString()
             );
             processBuilder.redirectErrorStream(true);
@@ -207,28 +204,82 @@ public class ConversionService {
         }
     }
 
-    private void deleteRecursive(Path path) throws IOException {
-        if (!Files.exists(path)) return;
-        try (var walk = Files.walk(path)) {
-            walk.sorted(Comparator.reverseOrder())
-                    .forEach(p -> {
-                        if (!p.toFile().delete()) {
-                            log.debug("Could not delete {}", p);
-                        }
-                    });
+    private String resolveLibreOfficeFilter(String targetFormat) throws IOException {
+        return switch (targetFormat.toLowerCase(Locale.ROOT)) {
+            case "pdf" -> "pdf";
+            case "docx" -> "docx";
+            case "pptx" -> "pptx";
+            default -> throw new IOException("Unsupported LibreOffice export format: " + targetFormat);
+        };
+    }
+
+    private void validateInputExtension(String fileName, ConversionType type) throws IOException {
+        String extension = getExtension(fileName);
+        if (extension.isEmpty()) {
+            throw new IOException("Unsupported file name: missing file extension for " + fileName);
         }
+
+        if (!SUPPORTED_INPUT_EXTENSIONS.get(type).contains(extension)) {
+            throw new IOException("Unsupported source format '" + extension + "' for conversion type " + type
+                    + ". Allowed formats: " + String.join(", ", SUPPORTED_INPUT_EXTENSIONS.get(type)));
+        }
+    }
+
+    private String sanitizeFileName(String fileName) {
+        if (fileName == null || fileName.isBlank()) {
+            return "upload";
+        }
+
+        String cleaned = fileName
+                .replace('\\', '_')
+                .replace('/', '_')
+                .replaceAll("[\\p{Cntrl}]", "_")
+                .trim();
+
+        return cleaned.isBlank() ? "upload" : cleaned;
     }
 
     private String stripExtension(String fileName) {
-        int dot = fileName.lastIndexOf('.');
-        return dot == -1 ? fileName : fileName.substring(0, dot);
+        if (fileName == null || fileName.isBlank()) {
+            return "upload";
+        }
+
+        int lastDot = fileName.lastIndexOf('.');
+        if (lastDot <= 0) {
+            return fileName;
+        }
+
+        return fileName.substring(0, lastDot);
     }
 
-    private String sanitizeFileName(String originalName) {
-        if (originalName == null || originalName.isBlank()) {
-            return "file";
+    private String getExtension(String fileName) {
+        if (fileName == null || fileName.isBlank()) {
+            return "";
         }
-        String fileName = Path.of(originalName).getFileName().toString();
-        return fileName.replaceAll("[\\\\/:*?\"<>|]", "_");
+
+        int lastDot = fileName.lastIndexOf('.');
+        if (lastDot < 0 || lastDot == fileName.length() - 1) {
+            return "";
+        }
+
+        return fileName.substring(lastDot + 1).toLowerCase(Locale.ROOT);
+    }
+
+    private void deleteRecursive(Path path) throws IOException {
+        if (path == null || Files.notExists(path)) {
+            return;
+        }
+
+        try (var paths = Files.walk(path)) {
+            paths.sorted(Comparator.reverseOrder()).forEach(current -> {
+                try {
+                    Files.deleteIfExists(current);
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+            });
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
     }
 }

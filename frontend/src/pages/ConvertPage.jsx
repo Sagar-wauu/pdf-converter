@@ -50,10 +50,19 @@ export default function ConvertPage() {
       window.URL.revokeObjectURL(url)
       setSuccess(true)
     } catch (e) {
+      let message = 'Could not reach the server. Please check that the backend is running.'
+
+      if (e.response?.data) {
+        try {
+          const payload = e.response.data instanceof Blob ? JSON.parse(await e.response.data.text()) : e.response.data
+          message = payload?.error || payload?.message || message
+        } catch {
+          message = 'Something went wrong while converting your file. Please make sure it is a valid file and try again.'
+        }
+      }
+
       setError(
-        e.response?.data
-          ? 'Something went wrong while converting your file. Please make sure it is a valid file and try again.'
-          : 'Could not reach the server. Please check that the backend is running.'
+        message
       )
     } finally {
       setLoading(false)
