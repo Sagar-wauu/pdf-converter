@@ -18,10 +18,10 @@ public class ConversionHistory {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false)
+    @Column(nullable = false, length = 500)
     private String originalFileName;
 
-    @Column(nullable = false)
+    @Column(nullable = false, length = 500)
     private String convertedFileName;
 
     // e.g. "PDF_TO_WORD", "WORD_TO_PDF", "PDF_TO_PPT", "PPT_TO_PDF"
@@ -31,6 +31,7 @@ public class ConversionHistory {
     @Column(nullable = false)
     private String status; // SUCCESS or FAILED
 
+    @Column(columnDefinition = "TEXT")
     private String errorMessage;
 
     @Column(nullable = false)
