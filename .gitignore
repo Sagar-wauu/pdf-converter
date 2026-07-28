@@ -1,0 +1,12 @@
+# Backend
+backend/target/
+backend/storage/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
