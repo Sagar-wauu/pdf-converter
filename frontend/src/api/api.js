@@ -8,15 +8,14 @@ export const convertFile = (file, type) => {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('type', type)
-  return api.post('/convert', formData, {
+  return api.post('/api/convert', formData, {
     responseType: 'blob',
     headers: { 'Content-Type': 'multipart/form-data' },
   })
 }
 
-export const getConversionHistory = () => api.get('/convert/history')
+export const getConversionHistory = () => api.get('/api/convert/history')
 
-// Added '/api' prefix here to match your backend controller mapping
 export const generateCoverPage = (payload) =>
   api.post('/api/coverpage/generate', payload, { responseType: 'blob' })
 
