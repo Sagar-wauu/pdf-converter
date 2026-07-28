@@ -128,16 +128,14 @@ public class ConversionService {
             String binaryPath = resolveLibreOfficeBinary();
             log.info("Executing LibreOffice binary: {}", binaryPath);
 
-            ProcessBuilder pb = new ProcessBuilder(
-                    binaryPath,
-                    "--headless",
-                    "--norestore",
-                    "--nologo",
-                    "--nofirststartwizard",
-                    "-env:UserInstallation=file://" + profileDir.toAbsolutePath(),
-                    "--convert-to", targetFormat,
-                    "--outdir", outputDir.toString(),
-                    inputPath.toString()
+            ProcessBuilder processBuilder = new ProcessBuilder(
+             "soffice", 
+            "--headless", 
+            "--convert-to", 
+             "docx:Office Open XML Text", 
+             "--outdir", 
+             outputDir, 
+            inputFilePath
             );
             pb.redirectErrorStream(true);
 
