@@ -132,8 +132,8 @@ public class ConversionService {
             // Dynamically select the correct export filter based on the target format
             String filter = switch (targetFormat.toLowerCase()) {
                 case "pdf" -> "pdf";
-                case "docx" -> "docx:Office Open XML Text";
-                case "pptx" -> "impress_pdf_Export";
+                case "docx" -> "writer8";
+                case "pptx" -> "impress8";
                 default -> targetFormat;
             };
 
