@@ -1,7 +1,7 @@
 import axios from 'axios'
 
 const api = axios.create({
-  baseURL: 'http://localhost:8080/api',
+  baseURL: 'https://pdf-converter-backend-r81c.onrender.com',
 })
 
 export const convertFile = (file, type) => {
