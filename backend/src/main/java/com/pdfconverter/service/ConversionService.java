@@ -1,6 +1,7 @@
 package com.pdfconverter.service;
 
 import com.pdfconverter.config.StorageConfig;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,10 +16,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -29,12 +30,25 @@ import java.util.concurrent.TimeUnit;
  * (text blocks, tables, images, fonts), so output preserves formatting
  * far more faithfully than a pure PDFBox/POI text-extraction approach.
  *
- * FIX: --convert-to now receives an explicit filter name (e.g.
- * "docx:MS Word 2007 XML") instead of a bare extension. On stripped-down
- * LibreOffice installs (common in Docker/Render images), a bare "docx"
- * or "pptx" target does not reliably resolve to a registered export
- * filter when importing from PDF, which produced:
+ * FIX (export filter): --convert-to receives an explicit filter name
+ * (e.g. "docx:MS Word 2007 XML") instead of a bare extension. On
+ * stripped-down LibreOffice installs, a bare "docx"/"pptx" target does
+ * not always resolve to a registered export filter when importing from
+ * PDF, which previously produced:
  *   "Error: no export filter for ... found, aborting."
+ *
+ * SPEED FIX: instead of creating a brand-new LibreOffice user profile
+ * directory (via -env:UserInstallation=...) and deleting it on every
+ * single request, we now maintain a small fixed-size POOL of profile
+ * directories, one per allowed concurrent conversion slot. Each profile
+ * is created once and reused across requests. Creating a fresh profile
+ * from scratch forces LibreOffice to re-initialize its user config
+ * (registrymodifications.xcu, cache, etc.) on every call, which is a
+ * meaningful chunk of the per-conversion latency. Reusing a warm
+ * profile removes that repeated cost. Concurrency safety is preserved
+ * because each pooled profile is only ever used by one LibreOffice
+ * process at a time (enforced by the blocking queue below), so there is
+ * no risk of two processes fighting over the same profile lock.
  */
 @Slf4j
 @Service
@@ -45,9 +59,34 @@ public class ConversionService {
 
     private static final int MAX_CONCURRENT_CONVERSIONS = 3;
     private static final long CONVERSION_TIMEOUT_SECONDS = 120;
+    private static final long SLOT_WAIT_TIMEOUT_SECONDS = 120;
 
     @Value("${libreoffice.binary-path:#{null}}")
     private String configuredLibreOfficeBinary;
+
+    // Pool of pre-warmed profile directories. Size == MAX_CONCURRENT_CONVERSIONS.
+    // A BlockingQueue doubles as both the "permit" mechanism (acquiring a slot
+    // blocks if none are free) and the pool of reusable profile paths, so we
+    // no longer need a separate Semaphore.
+    private BlockingQueue<Path> profilePool;
+
+    @PostConstruct
+    private void initProfilePool() {
+        try {
+            Path tempDir = storageConfig.tempPath();
+            Files.createDirectories(tempDir);
+
+            profilePool = new ArrayBlockingQueue<>(MAX_CONCURRENT_CONVERSIONS);
+            for (int i = 0; i < MAX_CONCURRENT_CONVERSIONS; i++) {
+                Path profileDir = tempDir.resolve("lo_profile_slot_" + i);
+                Files.createDirectories(profileDir);
+                profilePool.put(profileDir);
+            }
+            log.info("Initialized {} pre-warmed LibreOffice profile slots", MAX_CONCURRENT_CONVERSIONS);
+        } catch (IOException | InterruptedException e) {
+            throw new IllegalStateException("Failed to initialize LibreOffice profile pool", e);
+        }
+    }
 
     private String resolveLibreOfficeBinary() {
         // 1. Check if explicitly configured via application properties or environment variable mapping
@@ -75,8 +114,6 @@ public class ConversionService {
         // 4. Final fallback
         return "soffice";
     }
-
-    private final Semaphore conversionSlots = new Semaphore(MAX_CONCURRENT_CONVERSIONS, true);
 
     public enum ConversionType {
         PDF_TO_WORD, WORD_TO_PDF, PDF_TO_PPT, PPT_TO_PDF
@@ -119,24 +156,23 @@ public class ConversionService {
             throws IOException {
         Files.createDirectories(outputDir);
 
-        boolean acquired;
+        // Borrow a pre-warmed profile directory from the pool. This blocks if
+        // all slots are currently in use, which also caps concurrency at
+        // MAX_CONCURRENT_CONVERSIONS (same role the old Semaphore played).
+        Path profileDir;
         try {
-            acquired = conversionSlots.tryAcquire(CONVERSION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            profileDir = profilePool.poll(SLOT_WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while waiting for a free conversion slot", e);
         }
-        if (!acquired) {
+        if (profileDir == null) {
             throw new IOException("Server busy: all conversion slots in use, please retry shortly");
         }
 
-        Path profileDir = outputDir.resolve("lo_profile_" + uid);
-
         try {
-            Files.createDirectories(profileDir);
-
             String binaryPath = resolveLibreOfficeBinary();
-            log.info("Executing LibreOffice binary: {}", binaryPath);
+            log.info("Executing LibreOffice binary: {} (profile slot: {})", binaryPath, profileDir);
 
             String inputFileName = inputPath.getFileName().toString().toLowerCase();
 
@@ -152,6 +188,9 @@ public class ConversionService {
             command.add(binaryPath);
             command.add("--headless");
             command.add("--norestore");
+            command.add("--nolockcheck");
+            command.add("--nologo");
+            command.add("--nodefault");
             command.add("-env:UserInstallation=" + profileDir.toUri());
 
             // Explicitly force LibreOffice to use the Writer PDF import filter if input is a PDF
@@ -218,11 +257,21 @@ public class ConversionService {
             return outFile;
 
         } finally {
-            conversionSlots.release();
+            // Return the profile slot to the pool for reuse instead of deleting
+            // it. We intentionally do NOT wipe the directory here, that's what
+            // makes subsequent conversions faster.
             try {
-                deleteRecursive(profileDir);
+                profilePool.put(profileDir);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Interrupted while returning profile slot {} to pool", profileDir);
+            }
+
+            // Clean up the uploaded input file, it's no longer needed after conversion.
+            try {
+                Files.deleteIfExists(inputPath);
             } catch (IOException e) {
-                log.warn("Failed to clean up LibreOffice profile dir {}: {}", profileDir, e.getMessage());
+                log.warn("Failed to delete input file {}: {}", inputPath, e.getMessage());
             }
         }
     }
@@ -254,15 +303,5 @@ public class ConversionService {
         int lastDot = fileName.lastIndexOf('.');
         if (lastDot == -1) return fileName;
         return fileName.substring(0, lastDot);
-    }
-
-    private void deleteRecursive(Path path) throws IOException {
-        if (Files.exists(path)) {
-            try (var walk = Files.walk(path)) {
-                walk.sorted(Comparator.reverseOrder())
-                    .map(Path::toFile)
-                    .forEach(File::delete);
-            }
-        }
     }
 }
