@@ -11,14 +11,12 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -40,26 +38,23 @@ public class ConversionService {
 
     private static final int MAX_CONCURRENT_CONVERSIONS = 3;
     private static final long CONVERSION_TIMEOUT_SECONDS = 120;
-    private static final Map<ConversionType, Set<String>> SUPPORTED_INPUT_EXTENSIONS = Map.of(
-            ConversionType.PDF_TO_WORD, Set.of("pdf"),
-            ConversionType.PDF_TO_PPT, Set.of("pdf"),
-            ConversionType.WORD_TO_PDF, Set.of("doc", "docx"),
-            ConversionType.PPT_TO_PDF, Set.of("ppt", "pptx")
-    );
 
     @Value("${libreoffice.binary-path:#{null}}")
     private String configuredLibreOfficeBinary;
 
     private String resolveLibreOfficeBinary() {
+        // 1. Check if explicitly configured via application properties or environment variable mapping
         if (configuredLibreOfficeBinary != null && !configuredLibreOfficeBinary.isBlank()) {
             return configuredLibreOfficeBinary.trim();
         }
 
-        boolean isWindows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+        // 2. Check if running on Windows
+        boolean isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
         if (isWindows) {
             return "soffice.exe";
         }
 
+        // 3. For Linux containers (like Render), check standard absolute paths explicitly
         File standardBin = new File("/usr/bin/soffice");
         if (standardBin.exists()) {
             return "/usr/bin/soffice";
@@ -70,6 +65,7 @@ public class ConversionService {
             return "/usr/bin/libreoffice";
         }
 
+        // 4. Final fallback
         return "soffice";
     }
 
@@ -87,7 +83,6 @@ public class ConversionService {
 
         String uid = UUID.randomUUID().toString();
         String originalName = sanitizeFileName(file.getOriginalFilename());
-        validateInputExtension(originalName, type);
         String baseName = stripExtension(originalName);
 
         Path inputPath = uploadDir.resolve(uid + "_" + originalName);
@@ -140,7 +135,7 @@ public class ConversionService {
             String inputFileName = inputPath.getFileName().toString().toLowerCase();
 
             // Build process arguments dynamically to support PDF input filters correctly
-            java.util.List<String> command = new java.util.ArrayList<>();
+            List<String> command = new ArrayList<>();
             command.add(binaryPath);
             command.add("--headless");
             command.add("-env:UserInstallation=" + profileDir.toUri());
@@ -212,3 +207,25 @@ public class ConversionService {
             }
         }
     }
+
+    private String sanitizeFileName(String fileName) {
+        if (fileName == null) return "file";
+        return fileName.replaceAll("[^a-zA-Z0-9.-]", "_");
+    }
+
+    private String stripExtension(String fileName) {
+        int lastDot = fileName.lastIndexOf('.');
+        if (lastDot == -1) return fileName;
+        return fileName.substring(0, lastDot);
+    }
+
+    private void deleteRecursive(Path path) throws IOException {
+        if (Files.exists(path)) {
+            try (var walk = Files.walk(path)) {
+                walk.sorted(Comparator.reverseOrder())
+                    .map(Path::toFile)
+                    .forEach(File::delete);
+            }
+        }
+    }
+}
