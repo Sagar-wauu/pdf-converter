@@ -28,6 +28,13 @@ import java.util.concurrent.TimeUnit;
  * headless mode. LibreOffice performs real layout analysis internally
  * (text blocks, tables, images, fonts), so output preserves formatting
  * far more faithfully than a pure PDFBox/POI text-extraction approach.
+ *
+ * FIX: --convert-to now receives an explicit filter name (e.g.
+ * "docx:MS Word 2007 XML") instead of a bare extension. On stripped-down
+ * LibreOffice installs (common in Docker/Render images), a bare "docx"
+ * or "pptx" target does not reliably resolve to a registered export
+ * filter when importing from PDF, which produced:
+ *   "Error: no export filter for ... found, aborting."
  */
 @Slf4j
 @Service
@@ -131,13 +138,20 @@ public class ConversionService {
             String binaryPath = resolveLibreOfficeBinary();
             log.info("Executing LibreOffice binary: {}", binaryPath);
 
-            String filter = targetFormat.toLowerCase();
             String inputFileName = inputPath.getFileName().toString().toLowerCase();
+
+            // Use an explicit export filter name (not just the bare extension).
+            // Bare extensions like "docx" or "pptx" are ambiguous and, on many
+            // headless/minimal LibreOffice installs, fail to resolve to a
+            // registered export filter, especially for PDF -> Office conversions.
+            String filter = resolveExportFilter(targetFormat, inputFileName);
+            log.info("Using LibreOffice export filter: {}", filter);
 
             // Build process arguments dynamically to support PDF input filters correctly
             List<String> command = new ArrayList<>();
             command.add(binaryPath);
             command.add("--headless");
+            command.add("--norestore");
             command.add("-env:UserInstallation=" + profileDir.toUri());
 
             // Explicitly force LibreOffice to use the Writer PDF import filter if input is a PDF
@@ -185,15 +199,20 @@ public class ConversionService {
                         + "):\n" + processOutput);
             }
 
+            // LibreOffice names the output file using the extension portion of
+            // the filter string (before any ':'), so strip that off when
+            // looking for the produced file.
+            String targetExtension = filter.contains(":") ? filter.substring(0, filter.indexOf(':')) : filter;
+
             String inputBaseName = stripExtension(inputPath.getFileName().toString());
-            Path libreOfficeOutput = outputDir.resolve(inputBaseName + "." + targetFormat);
+            Path libreOfficeOutput = outputDir.resolve(inputBaseName + "." + targetExtension);
 
             if (!Files.exists(libreOfficeOutput)) {
                 throw new IOException("Expected LibreOffice output not found: " + libreOfficeOutput
                         + "\nLibreOffice log:\n" + processOutput);
             }
 
-            File outFile = outputDir.resolve(uid + "_output." + targetFormat).toFile();
+            File outFile = outputDir.resolve(uid + "_output." + targetExtension).toFile();
             Files.move(libreOfficeOutput, outFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
 
             return outFile;
@@ -206,6 +225,24 @@ public class ConversionService {
                 log.warn("Failed to clean up LibreOffice profile dir {}: {}", profileDir, e.getMessage());
             }
         }
+    }
+
+    /**
+     * Maps a target format + source file to an explicit LibreOffice export
+     * filter string suitable for --convert-to. Using explicit filter names
+     * (rather than bare extensions) avoids "no export filter" errors that
+     * occur on some headless/minimal LibreOffice builds, particularly for
+     * PDF -> DOCX/PPTX conversions.
+     */
+    private String resolveExportFilter(String targetFormat, String inputFileName) {
+        boolean fromPdf = inputFileName.endsWith(".pdf");
+
+        return switch (targetFormat.toLowerCase()) {
+            case "pdf" -> "pdf"; // bare "pdf" resolves fine for Writer/Impress -> PDF export
+            case "docx" -> fromPdf ? "docx:MS Word 2007 XML" : "docx";
+            case "pptx" -> fromPdf ? "pptx:Impress MS PowerPoint 2007 XML" : "pptx";
+            default -> targetFormat.toLowerCase();
+        };
     }
 
     private String sanitizeFileName(String fileName) {

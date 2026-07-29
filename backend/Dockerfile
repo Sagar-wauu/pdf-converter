@@ -8,7 +8,8 @@ RUN mvn clean package -DskipTests
 FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
 
-# Install LibreOffice, headless package, and document filters
+# Install LibreOffice, headless package, document filters, and fonts
+# (fonts are needed for correct text layout when importing PDFs)
 RUN apt-get update && apt-get install -y \
     libreoffice \
     libreoffice-writer \
@@ -16,7 +17,8 @@ RUN apt-get update && apt-get install -y \
     libreoffice-impress \
     libreoffice-core \
     libreoffice-common \
-    default-jre \
+    fonts-dejavu \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/target/*.jar app.jar
