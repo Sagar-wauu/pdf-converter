@@ -136,18 +136,27 @@ public class ConversionService {
             String binaryPath = resolveLibreOfficeBinary();
             log.info("Executing LibreOffice binary: {}", binaryPath);
 
-            String filter = resolveLibreOfficeFilter(targetFormat);
+            String filter = targetFormat.toLowerCase();
+            String inputFileName = inputPath.getFileName().toString().toLowerCase();
 
-            ProcessBuilder processBuilder = new ProcessBuilder(
-                    binaryPath,
-                    "--headless",
-                    "-env:UserInstallation=" + profileDir.toUri(),
-                    "--convert-to",
-                    filter,
-                    "--outdir",
-                    outputDir.toString(),
-                    inputPath.toString()
-            );
+            // Build process arguments dynamically to support PDF input filters correctly
+            java.util.List<String> command = new java.util.ArrayList<>();
+            command.add(binaryPath);
+            command.add("--headless");
+            command.add("-env:UserInstallation=" + profileDir.toUri());
+
+            // Explicitly force LibreOffice to use the Writer PDF import filter if input is a PDF
+            if (inputFileName.endsWith(".pdf")) {
+                command.add("--infilter=writer_pdf_import");
+            }
+
+            command.add("--convert-to");
+            command.add(filter);
+            command.add("--outdir");
+            command.add(outputDir.toString());
+            command.add(inputPath.toString());
+
+            ProcessBuilder processBuilder = new ProcessBuilder(command);
             processBuilder.redirectErrorStream(true);
 
             Process process = processBuilder.start();
@@ -203,83 +212,3 @@ public class ConversionService {
             }
         }
     }
-
-    private String resolveLibreOfficeFilter(String targetFormat) throws IOException {
-        return switch (targetFormat.toLowerCase(Locale.ROOT)) {
-            case "pdf" -> "pdf";
-            case "docx" -> "docx";
-            case "pptx" -> "pptx";
-            default -> throw new IOException("Unsupported LibreOffice export format: " + targetFormat);
-        };
-    }
-
-    private void validateInputExtension(String fileName, ConversionType type) throws IOException {
-        String extension = getExtension(fileName);
-        if (extension.isEmpty()) {
-            throw new IOException("Unsupported file name: missing file extension for " + fileName);
-        }
-
-        if (!SUPPORTED_INPUT_EXTENSIONS.get(type).contains(extension)) {
-            throw new IOException("Unsupported source format '" + extension + "' for conversion type " + type
-                    + ". Allowed formats: " + String.join(", ", SUPPORTED_INPUT_EXTENSIONS.get(type)));
-        }
-    }
-
-    private String sanitizeFileName(String fileName) {
-        if (fileName == null || fileName.isBlank()) {
-            return "upload";
-        }
-
-        String cleaned = fileName
-                .replace('\\', '_')
-                .replace('/', '_')
-                .replaceAll("[\\p{Cntrl}]", "_")
-                .trim();
-
-        return cleaned.isBlank() ? "upload" : cleaned;
-    }
-
-    private String stripExtension(String fileName) {
-        if (fileName == null || fileName.isBlank()) {
-            return "upload";
-        }
-
-        int lastDot = fileName.lastIndexOf('.');
-        if (lastDot <= 0) {
-            return fileName;
-        }
-
-        return fileName.substring(0, lastDot);
-    }
-
-    private String getExtension(String fileName) {
-        if (fileName == null || fileName.isBlank()) {
-            return "";
-        }
-
-        int lastDot = fileName.lastIndexOf('.');
-        if (lastDot < 0 || lastDot == fileName.length() - 1) {
-            return "";
-        }
-
-        return fileName.substring(lastDot + 1).toLowerCase(Locale.ROOT);
-    }
-
-    private void deleteRecursive(Path path) throws IOException {
-        if (path == null || Files.notExists(path)) {
-            return;
-        }
-
-        try (var paths = Files.walk(path)) {
-            paths.sorted(Comparator.reverseOrder()).forEach(current -> {
-                try {
-                    Files.deleteIfExists(current);
-                } catch (IOException e) {
-                    throw new UncheckedIOException(e);
-                }
-            });
-        } catch (UncheckedIOException e) {
-            throw e.getCause();
-        }
-    }
-}
